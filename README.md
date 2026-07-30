@@ -3,7 +3,7 @@
 自己寫的音訊視覺化播放器。
 下載 MusicPy.zip 並解壓後直接執行 MusicPy.exe 就可以跑了。
 
-<img width="622" height="86" alt="螢幕擷取畫面 2026-07-30 175922" src="https://github.com/user-attachments/assets/353c0c3c-c9c2-4074-b069-240683a9046b" />
+<img width="635" height="87" alt="image" src="https://github.com/user-attachments/assets/eaa4a113-9c41-4917-b8cf-f0365c6bf703" />
 
 <img width="626" height="84" alt="螢幕擷取畫面 2026-07-30 180023" src="https://github.com/user-attachments/assets/59bc4985-9a4d-49f2-8128-e1eec0424fc2" />
 
