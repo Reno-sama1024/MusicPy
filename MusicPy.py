@@ -4,6 +4,7 @@ import sys
 import os
 import math
 import threading
+import random
 from pydub import AudioSegment
 import tkinter as tk
 from tkinter import filedialog
@@ -23,9 +24,22 @@ class MusiCanApp:
         self.BAR_COUNT = 130
         self.FFT_SIZE = 2048
         
-        self.screen = pygame.display.set_mode((self.WIDTH, self.HEIGHT))
+        # 🌟 解決延遲：音訊時間校正偏移量 (單位: 毫秒)，將畫面提早以對齊聲音
+        self.AUDIO_DELAY_OFFSET = 120 
+        
+        # 🌟 解決畫面撕裂：開啟雙緩衝 (DOUBLEBUF)、硬體加速 (HWSURFACE) 與垂直同步 (vsync=1)
+        flags = pygame.DOUBLEBUF | pygame.HWSURFACE
+        try:
+            self.screen = pygame.display.set_mode((self.WIDTH, self.HEIGHT), flags, vsync=1)
+        except TypeError:
+            # 相容舊版 Pygame 的 vsync 寫法
+            self.screen = pygame.display.set_mode((self.WIDTH, self.HEIGHT), flags)
+            
         pygame.display.set_caption("MusiCan Studio - Perfect Web-Audio Engine")
         self.clock = pygame.time.Clock()
+        
+        # 繪製半透明漸層長條用的獨立畫布
+        self.canvas = pygame.Surface((self.WIDTH, self.HEIGHT), pygame.SRCALPHA)
         
         # Fonts
         self.font_title = pygame.font.SysFont("Microsoft JhengHei", 65, bold=True)
@@ -46,11 +60,14 @@ class MusiCanApp:
         self.np_audio_data = np.array([], dtype=np.float32)
         self.audio_duration_ms = 0
         
-        # 網頁級別的平滑緩衝區
+        # 平滑緩衝區
         self.fft_smoothed = np.zeros(self.BAR_COUNT)
         self.smoothed_values = np.zeros(self.BAR_COUNT)
         self.peaks = np.zeros(self.BAR_COUNT)
         self.osc_smoothed = np.zeros(self.FFT_SIZE, dtype=np.float32)
+        
+        # TANO*C 特效屬性
+        self.shake_amount = 0.0
         
         self.scroll_y = 0
         self.toggle_btn_rect = pygame.Rect(self.sidebar_w, 20, 35, 45)
@@ -80,7 +97,7 @@ class MusiCanApp:
             audio = audio.set_channels(1).set_frame_rate(44100)
             raw = audio.get_array_of_samples()
             
-            # 轉換為標準浮點數數值 (-1.0 到 1.0)
+            # 轉換為標準浮點數數域 (-1.0 到 1.0)
             self.np_audio_data = np.array(raw, dtype=np.float32) / (2.0 ** 15)
             
             self.fft_smoothed.fill(0)
@@ -112,6 +129,18 @@ class MusiCanApp:
         m = s // 60
         sec = s % 60
         return f"{m}:{sec:02d}"
+
+    def draw_gradient_bar(self, surface, x, y, width, height):
+        """ 繪製上高亮、下透明的漸層長條 """
+        if height <= 0: return
+        bar_surf = pygame.Surface((width, height), pygame.SRCALPHA)
+        
+        for row in range(height):
+            alpha_ratio = 1.0 - (row / height)
+            alpha = int(255 * (alpha_ratio ** 1.5))
+            pygame.draw.line(bar_surf, (0, 255, 255, alpha), (0, row), (width, row))
+            
+        surface.blit(bar_surf, (x, y))
 
     def run(self):
         running = True
@@ -153,127 +182,130 @@ class MusiCanApp:
                         max_scroll = -max(0, len(self.playlist) * 35 - (self.HEIGHT - 80))
                         self.scroll_y = max(max_scroll, self.scroll_y - 35)
 
-            # --- CANVAS RENDERING ---
+            # --- CANVAS PREPARATION & TANO*C SCREENSHAKE ---
             self.screen.fill(self.BG_DARK)
+            self.canvas.fill((0, 0, 0, 0)) # 清空 Alpha 畫布
             
-            current_ms = pygame.mixer.music.get_pos()
-            playing = pygame.mixer.music.get_busy() and current_ms >= 0
+            shake_x, shake_y = 0, 0
+            if self.shake_amount > 0.5:
+                shake_x = random.uniform(-self.shake_amount, self.shake_amount)
+                shake_y = random.uniform(-self.shake_amount, self.shake_amount)
+                self.shake_amount *= 0.88
+            
+            raw_current_ms = pygame.mixer.music.get_pos()
+            playing = pygame.mixer.music.get_busy() and raw_current_ms >= 0
             
             raw_freq_bars = np.zeros(self.BAR_COUNT, dtype=np.float32)
             time_data = np.zeros(self.FFT_SIZE, dtype=np.float32)
             
             if playing and self.np_audio_data.size > 0:
+                # 🌟 時間補償 OFFSET，精準對齊視覺與聽覺
+                current_ms = raw_current_ms + self.AUDIO_DELAY_OFFSET
                 sample_idx = int((current_ms / 1000.0) * 44100)
+                
                 if sample_idx + self.FFT_SIZE < self.np_audio_data.size:
                     time_data = self.np_audio_data[sample_idx : sample_idx + self.FFT_SIZE]
-                else:
+                elif sample_idx < self.np_audio_data.size:
                     time_data = self.np_audio_data[sample_idx:]
                     time_data = np.pad(time_data, (0, self.FFT_SIZE - len(time_data)), 'constant')
                 
-                # 示波器時域超流暢平滑
+                # 示波器時域平滑
                 self.osc_smoothed = self.osc_smoothed * 0.4 + time_data * 0.6
                 
-                # 🌟 修正 1：加 Hanning 窗，並給予 2.0 倍網頁級能量補償
+                # Hanning 窗能量補償
                 windowed_time = time_data * np.hanning(self.FFT_SIZE) * 2.0
                 fft_res = np.fft.rfft(windowed_time)
-                # 歸一化振幅譜
                 fft_abs = np.abs(fft_res) / self.FFT_SIZE
                 
-                # 🌟 修正 2：重新設計完美契合 4:3:3 的非線性頻帶映射 (Log-Frequency Binning)
-                # 剔除 0-40Hz 的極端悶音，將最高頻鎖定在 16000Hz 內（這是樂器高頻動態最瘋狂的區間，拒絕採樣空白）
                 min_hz = 42.0
                 max_hz = 15500.0
                 
                 for i in range(self.BAR_COUNT):
-                    # 使用網頁端標準的對數分布計算每一個長條對應的音訊頻率
                     pct = i / (self.BAR_COUNT - 1)
                     target_hz = min_hz * math.pow(max_hz / min_hz, pct)
                     
-                    # 頻率轉成 FFT 陣列索引 (Index)
                     bin_idx = target_hz * self.FFT_SIZE / 44100.0
                     idx0 = max(0, min(self.FFT_SIZE // 2, math.floor(bin_idx)))
                     idx1 = max(0, min(self.FFT_SIZE // 2, math.ceil(bin_idx)))
                     t = bin_idx - idx0
                     
-                    # 線性插值取得該頻段的原始振幅
                     amplitude = fft_abs[idx0] * (1.0 - t) + fft_abs[idx1] * t
                     
-                    # 🌟 修正 3：完美復刻 Web Audio API 的分貝壓限公式 
-                    # 轉換為 dB，並精準映射到 -95dB (靜音) 至 -25dB (大音量滿載) 區間
                     db = 20.0 * math.log10(amplitude + 1e-6)
-                    normalized_val = (db + 95.0) / (95.0 - 25.0) # 縮放到 0.0 ~ 1.0
-                    raw_freq_bars[i] = max(0.0, min(1.0, normalized_val)) * 255.0
+                    
+                    # 🔥 底噪門檻設為 -85dB
+                    normalized_val = (db + 85.0) / 85.0
+                    normalized_val = max(0.0, min(1.0, normalized_val))
+                    
+                    # 🔥 次方拉伸：讓低能量沉底，高能量暴起成巨峰
+                    contrast_val = math.pow(normalized_val, 2.8)
+                    raw_freq_bars[i] = contrast_val * 255.0
 
-                # 🌟 修正 4：網頁級的獨立頻段平滑係數 (SmoothingTimeConstant)
-                # 原本一整組 0.85 太死板了！我們讓低頻沉穩，中高頻「完全釋放速度」！
+                # TANO*C 特效：極低頻擊打檢測
+                bass_energy = np.mean(raw_freq_bars[:12]) / 255.0
+                if bass_energy > 0.5:
+                    self.shake_amount = max(self.shake_amount, (bass_energy - 0.45) * 45.0)
+
+                # 頻段獨立 Smoothing
                 for i in range(self.BAR_COUNT):
                     pct = i / (self.BAR_COUNT - 1)
-                    # 低頻平滑度 0.82，高頻平滑度下調至 0.55 (高頻反應速度暴增，徹底擺脫矮牆)
-                    stc = 0.82 - (pct * 0.27)
+                    stc = 0.55 - (pct * 0.15)
                     self.fft_smoothed[i] = self.fft_smoothed[i] * stc + raw_freq_bars[i] * (1.0 - stc)
             else:
-                self.fft_smoothed *= 0.7
-                self.osc_smoothed *= 0.7
+                self.fft_smoothed *= 0.6
+                self.osc_smoothed *= 0.6
 
-            # --- 1. RENDER SPECTRUM BARS (4:3:3 高度比例完美釋放) ---
+            # --- 1. RENDER SPECTRUM BARS ---
             b_width = 6
             b_gap = 9
             total_w = (b_width + b_gap) * self.BAR_COUNT
-            start_x = self.sidebar_w + ((self.WIDTH - self.sidebar_w) - total_w) // 2
-            panel_y = self.HEIGHT 
+            start_x = self.sidebar_w + ((self.WIDTH - self.sidebar_w) - total_w) // 2 + int(shake_x)
+            panel_y = self.HEIGHT + int(shake_y)
             
             for i in range(self.BAR_COUNT):
                 progress = i / (self.BAR_COUNT - 1)
                 
-                # 基於你的 4:3:3 視覺美學，為中高頻注入更強的動能乘數（Multiplier）
-                if progress < 0.40:     # 低頻 (佔 4/10 高度空間) -> 最大高度 ~460
-                    power_exponent = 2.2
-                    height_multiplier = 480
-                elif progress < 0.70:   # 中頻 (佔 3/10 高度空間) -> 最大高度 ~350
-                    power_exponent = 2.0
-                    height_multiplier = 350
-                else:                   # 高頻 (佔 3/10 高度空間) -> 給予 1.1 的增益，讓高頻瘋狂彈跳
-                    power_exponent = 1.4
-                    height_multiplier = 350 * 1.1
+                # 🌟 全頻段無縫平滑過渡
+                power_exponent = 1.4 - (progress * 0.2)
+                height_multiplier = 780.0 - (progress * 180.0) # 頂峰直衝 780px
                     
-                # 計算最終渲染高度
                 norm_val = self.fft_smoothed[i] / 255.0
                 val = (norm_val ** power_exponent) * height_multiplier
                 
-                # 凌厲的緩衝過渡
+                # 急速上升與陡峭下墜
                 if val > self.smoothed_values[i]:
-                    self.smoothed_values[i] = self.smoothed_values[i] * 0.1 + val * 0.9
+                    self.smoothed_values[i] = self.smoothed_values[i] * 0.02 + val * 0.98
                 else:
-                    # 根據頻段決定下墜速度，中高頻掉落更快、更有打擊顆粒感
-                    fall_speed = 20 if progress < 0.4 else 50
+                    fall_speed = 38.0 + (progress * 30.0)
                     self.smoothed_values[i] = max(0.0, self.smoothed_values[i] - fall_speed)
                     
                 if self.smoothed_values[i] > self.peaks[i]:
                     self.peaks[i] = self.smoothed_values[i]
                 else:
-                    self.peaks[i] = max(0.0, self.peaks[i] - 7)
+                    self.peaks[i] = max(0.0, self.peaks[i] - 12.0)
                     
                 current_x = start_x + i * (b_width + b_gap)
                 bar_h = int(self.smoothed_values[i])
                 
                 if bar_h > 0:
-                    pygame.draw.rect(self.screen, self.NEON_CYAN, (current_x, panel_y - bar_h, b_width, bar_h))
+                    self.draw_gradient_bar(self.canvas, current_x, panel_y - bar_h, b_width, bar_h)
                 
                 if self.peaks[i] > 0:
                     p_y = panel_y - int(self.peaks[i]) - 12
                     if p_y > 0:
-                        pygame.draw.rect(self.screen, (0, 135, 135), (current_x, p_y, b_width, 4))
+                        pygame.draw.rect(self.canvas, (0, 255, 255, 220), (current_x, p_y, b_width, 3))
 
-            # --- 2. RENDER ANTI-ALIASED PURE WHITE OSCILLOSCOPE ---
-            center_y_osc = 600
-            amp = 180 # 放大示波器振幅，看起來更具衝擊力
+            self.screen.blit(self.canvas, (0, 0))
+
+            # --- 2. RENDER PURE WHITE OSCILLOSCOPE ---
+            center_y_osc = 600 + int(shake_y)
+            amp = 180
             v_width = self.WIDTH - self.sidebar_w
             
             osc_points = []
             step = max(1, self.FFT_SIZE // 180) 
             for idx in range(0, self.FFT_SIZE, step):
-                x = self.sidebar_w + int((idx / self.FFT_SIZE) * v_width)
-                # 限制最大振幅，防止時域波形破頂
+                x = self.sidebar_w + int((idx / self.FFT_SIZE) * v_width) + int(shake_x)
                 y_offset = max(-amp, min(amp, self.osc_smoothed[idx] * amp * 1.5))
                 y = int(center_y_osc + y_offset)
                 osc_points.append((x, y))
@@ -291,12 +323,13 @@ class MusiCanApp:
             pygame.draw.rect(self.screen, (40, 30, 60), (p_container_x, 40, p_container_w, 8))
             
             progress_pct = 0.0
+            display_ms = raw_current_ms if playing else 0
             if playing and self.audio_duration_ms > 0:
-                progress_pct = min(1.0, current_ms / self.audio_duration_ms)
+                progress_pct = min(1.0, display_ms / self.audio_duration_ms)
             if progress_pct > 0:
                 pygame.draw.rect(self.screen, self.NEON_CYAN, (p_container_x, 40, int(p_container_w * progress_pct), 8))
                 
-            str_curr = self.format_time(current_ms if playing else 0)
+            str_curr = self.format_time(display_ms)
             str_total = self.format_time(self.audio_duration_ms if self.audio_duration_ms > 0 else 0)
             self.screen.blit(self.font_time.render(str_curr, True, self.NEON_CYAN), (p_container_x, 55))
             txt_t = self.font_time.render(str_total, True, self.NEON_CYAN)
