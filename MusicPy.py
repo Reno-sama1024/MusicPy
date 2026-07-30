@@ -12,7 +12,6 @@ from tkinter import filedialog
 class MusiCanApp:
     def __init__(self):
         pygame.init()
-        # 放大音訊緩衝區，確保 FFT 採樣時域數據足夠飽滿
         pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=4096)
         
         self.WIDTH, self.HEIGHT = 1920, 1080
@@ -24,21 +23,17 @@ class MusiCanApp:
         self.BAR_COUNT = 130
         self.FFT_SIZE = 2048
         
-        # 🌟 解決延遲：音訊時間校正偏移量 (單位: 毫秒)，將畫面提早以對齊聲音
         self.AUDIO_DELAY_OFFSET = 120 
         
-        # 🌟 解決畫面撕裂：開啟雙緩衝 (DOUBLEBUF)、硬體加速 (HWSURFACE) 與垂直同步 (vsync=1)
         flags = pygame.DOUBLEBUF | pygame.HWSURFACE
         try:
             self.screen = pygame.display.set_mode((self.WIDTH, self.HEIGHT), flags, vsync=1)
         except TypeError:
-            # 相容舊版 Pygame 的 vsync 寫法
             self.screen = pygame.display.set_mode((self.WIDTH, self.HEIGHT), flags)
             
         pygame.display.set_caption("MusiCan Studio - Perfect Web-Audio Engine")
         self.clock = pygame.time.Clock()
         
-        # 繪製半透明漸層長條用的獨立畫布
         self.canvas = pygame.Surface((self.WIDTH, self.HEIGHT), pygame.SRCALPHA)
         
         # Fonts
@@ -60,13 +55,12 @@ class MusiCanApp:
         self.np_audio_data = np.array([], dtype=np.float32)
         self.audio_duration_ms = 0
         
-        # 平滑緩衝區
+        # Buffer
         self.fft_smoothed = np.zeros(self.BAR_COUNT)
         self.smoothed_values = np.zeros(self.BAR_COUNT)
         self.peaks = np.zeros(self.BAR_COUNT)
         self.osc_smoothed = np.zeros(self.FFT_SIZE, dtype=np.float32)
         
-        # TANO*C 特效屬性
         self.shake_amount = 0.0
         
         self.scroll_y = 0
@@ -93,11 +87,10 @@ class MusiCanApp:
                 audio = AudioSegment.from_mp3(path)
                 
             self.audio_duration_ms = len(audio)
-            # 強制轉單聲道、標準44100Hz
+
             audio = audio.set_channels(1).set_frame_rate(44100)
             raw = audio.get_array_of_samples()
-            
-            # 轉換為標準浮點數數域 (-1.0 到 1.0)
+
             self.np_audio_data = np.array(raw, dtype=np.float32) / (2.0 ** 15)
             
             self.fft_smoothed.fill(0)
@@ -131,7 +124,7 @@ class MusiCanApp:
         return f"{m}:{sec:02d}"
 
     def draw_gradient_bar(self, surface, x, y, width, height):
-        """ 繪製上高亮、下透明的漸層長條 """
+
         if height <= 0: return
         bar_surf = pygame.Surface((width, height), pygame.SRCALPHA)
         
@@ -182,9 +175,8 @@ class MusiCanApp:
                         max_scroll = -max(0, len(self.playlist) * 35 - (self.HEIGHT - 80))
                         self.scroll_y = max(max_scroll, self.scroll_y - 35)
 
-            # --- CANVAS PREPARATION & TANO*C SCREENSHAKE ---
             self.screen.fill(self.BG_DARK)
-            self.canvas.fill((0, 0, 0, 0)) # 清空 Alpha 畫布
+            self.canvas.fill((0, 0, 0, 0))
             
             shake_x, shake_y = 0, 0
             if self.shake_amount > 0.5:
@@ -199,7 +191,6 @@ class MusiCanApp:
             time_data = np.zeros(self.FFT_SIZE, dtype=np.float32)
             
             if playing and self.np_audio_data.size > 0:
-                # 🌟 時間補償 OFFSET，精準對齊視覺與聽覺
                 current_ms = raw_current_ms + self.AUDIO_DELAY_OFFSET
                 sample_idx = int((current_ms / 1000.0) * 44100)
                 
@@ -209,10 +200,8 @@ class MusiCanApp:
                     time_data = self.np_audio_data[sample_idx:]
                     time_data = np.pad(time_data, (0, self.FFT_SIZE - len(time_data)), 'constant')
                 
-                # 示波器時域平滑
                 self.osc_smoothed = self.osc_smoothed * 0.4 + time_data * 0.6
                 
-                # Hanning 窗能量補償
                 windowed_time = time_data * np.hanning(self.FFT_SIZE) * 2.0
                 fft_res = np.fft.rfft(windowed_time)
                 fft_abs = np.abs(fft_res) / self.FFT_SIZE
@@ -233,20 +222,16 @@ class MusiCanApp:
                     
                     db = 20.0 * math.log10(amplitude + 1e-6)
                     
-                    # 🔥 底噪門檻設為 -85dB
                     normalized_val = (db + 85.0) / 85.0
                     normalized_val = max(0.0, min(1.0, normalized_val))
                     
-                    # 🔥 次方拉伸：讓低能量沉底，高能量暴起成巨峰
                     contrast_val = math.pow(normalized_val, 2.8)
                     raw_freq_bars[i] = contrast_val * 255.0
 
-                # TANO*C 特效：極低頻擊打檢測
                 bass_energy = np.mean(raw_freq_bars[:12]) / 255.0
                 if bass_energy > 0.5:
                     self.shake_amount = max(self.shake_amount, (bass_energy - 0.45) * 45.0)
 
-                # 頻段獨立 Smoothing
                 for i in range(self.BAR_COUNT):
                     pct = i / (self.BAR_COUNT - 1)
                     stc = 0.55 - (pct * 0.15)
@@ -255,7 +240,6 @@ class MusiCanApp:
                 self.fft_smoothed *= 0.6
                 self.osc_smoothed *= 0.6
 
-            # --- 1. RENDER SPECTRUM BARS ---
             b_width = 6
             b_gap = 9
             total_w = (b_width + b_gap) * self.BAR_COUNT
@@ -265,14 +249,12 @@ class MusiCanApp:
             for i in range(self.BAR_COUNT):
                 progress = i / (self.BAR_COUNT - 1)
                 
-                # 🌟 全頻段無縫平滑過渡
                 power_exponent = 1.4 - (progress * 0.2)
-                height_multiplier = 780.0 - (progress * 180.0) # 頂峰直衝 780px
+                height_multiplier = 780.0 - (progress * 180.0) 
                     
                 norm_val = self.fft_smoothed[i] / 255.0
                 val = (norm_val ** power_exponent) * height_multiplier
                 
-                # 急速上升與陡峭下墜
                 if val > self.smoothed_values[i]:
                     self.smoothed_values[i] = self.smoothed_values[i] * 0.02 + val * 0.98
                 else:
@@ -297,7 +279,6 @@ class MusiCanApp:
 
             self.screen.blit(self.canvas, (0, 0))
 
-            # --- 2. RENDER PURE WHITE OSCILLOSCOPE ---
             center_y_osc = 600 + int(shake_y)
             amp = 180
             v_width = self.WIDTH - self.sidebar_w
@@ -313,7 +294,6 @@ class MusiCanApp:
             if len(osc_points) > 1:
                 pygame.draw.lines(self.screen, self.WHITE, False, osc_points, 2)
 
-            # --- TOP HEADER RENDERING ---
             display_title = "LOADING..." if self.is_loading else self.song_name
             txt_title = self.font_title.render(display_title, True, self.NEON_CYAN)
             self.screen.blit(txt_title, (self.sidebar_w + 80, 100))
@@ -335,7 +315,6 @@ class MusiCanApp:
             txt_t = self.font_time.render(str_total, True, self.NEON_CYAN)
             self.screen.blit(txt_t, (p_container_x + p_container_w - txt_t.get_width(), 55))
 
-            # --- RENDER COLLAPSIBLE PLAYLIST ---
             if self.sidebar_w > 0:
                 sidebar_surf = pygame.Surface((self.sidebar_w, self.HEIGHT))
                 sidebar_surf.fill(self.SIDEBAR_BG)
